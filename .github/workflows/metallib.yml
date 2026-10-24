@@ -1,0 +1,44 @@
+name: metallib
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      engine_sha:
+        description: "Layr-Labs/mlxfast-nemotron35-30b-a3b-engine commit to build"
+        required: true
+        default: "3ece644de89055645263a4d5de1780a7702bdd8c"
+permissions:
+  contents: read
+jobs:
+  metallib:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      ENGINE_SHA: ${{ github.event.inputs.engine_sha || '3ece644de89055645263a4d5de1780a7702bdd8c' }}
+    steps:
+      - name: Fetch public engine
+        run: |
+          git init engine
+          git -C engine remote add origin https://github.com/Layr-Labs/mlxfast-nemotron35-30b-a3b-engine.git
+          git -C engine fetch --depth 1 origin "$ENGINE_SHA"
+          git -C engine checkout --detach FETCH_HEAD
+          git -C engine log -1 --format='%H %s'
+      - name: Build release bench-worker and mlx.metallib
+        working-directory: engine
+        run: |
+          set -o pipefail
+          swift build -c release --force-resolved-versions --jobs 4 --product bench-worker 2>&1 | tail -3
+          MLXFAST_BUILD_JOBS=4 CMAKE_BUILD_PARALLEL_LEVEL=4 tools/build-mlx-metallib.sh --all-build-roots 2>&1 | tail -5
+          find .build -name "mlx.metallib*" -exec ls -la {} \;
+          mkdir -p ../out
+          cp "$(find .build -path '*release*' -name mlx.metallib | head -1)" ../out/
+          cp "$(find .build -path '*release*' -name mlx.metallib.fingerprint | head -1)" ../out/ || true
+          xcrun -sdk macosx metal -v 2>&1 | head -3 > ../out/metal-version.txt
+          sw_vers > ../out/runner-macos.txt; xcodebuild -version >> ../out/runner-macos.txt
+          echo "$ENGINE_SHA" > ../out/engine-sha.txt
+          shasum -a 256 ../out/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlx-metallib-${{ env.ENGINE_SHA }}
+          path: out/
